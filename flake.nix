@@ -22,7 +22,7 @@
     flake-utils,
     poetry2nix,
   }:
-    flake-utils.lib.eachSystem ["x86_64-linux"] (system: let
+    flake-utils.lib.eachSystem ["x86_64-linux" "aarch64-darwin"] (system: let
       pkgs = nixpkgs.legacyPackages.${system};
       lib = pkgs.lib;
       inherit (lib) fileset;
