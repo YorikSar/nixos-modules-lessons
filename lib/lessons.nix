@@ -249,20 +249,100 @@
         ```
       '')
       selfEvaluationToSubstitue;
+
+    runLineMatch = ''(\[//]: # \(run .*\))'';
+    runAttrMatch = ''\[//]: # \(run (.*)\)'';
+    runLinesToReplace = multilineMatch runLineMatch rawLesson;
+    runEvaluationToSubstitue =
+      lib.flatten
+      (
+        builtins.map
+        (
+          multilineMatch
+          runAttrMatch
+        )
+        runLinesToReplace
+      );
+    replaceRegexStr = str: regex: let
+      match = builtins.match ".*(${regex.regex}).*" str;
+      group0 = builtins.elemAt match 0;
+    in
+      if builtins.isNull match
+      then str
+      else builtins.replaceStrings [group0] [(regex.f match)] str;
+    replaceRegexesStr = str: regexes: lib.foldl' replaceRegexStr str regexes;
+    replaceRegexesText = text: regexes: lib.concatMapStringsSep "\n" (str: replaceRegexesStr str regexes) (lib.splitString "\n" text);
+    runValueToSubstitute =
+      builtins.map
+      (cmdLine: let
+        sanitizedCmdLine = replaceRegexesText (builtins.readFile "${lessonPath}/${cmdLine}") [
+          {
+            regex = "nix run nixpkgs#([^ ]*)( --)?";
+            f = match: lib.getExe pkgs.${builtins.elemAt match 1};
+          }
+          {
+            regex = ''nix eval (.*)( \||$)'';
+            f = match: let
+              splitShellArgs = str:
+                builtins.fromJSON (builtins.readFile (
+                  pkgs.runCommand "split" {} ''
+                    ${lib.getExe pkgs.jq} '$ARGS.positional' --null-input --args -- ${str} > $out
+                  ''
+                ));
+              args = splitShellArgs (builtins.elemAt match 1);
+              parsed = lib.attrsets.mergeAttrsList (lib.imap0 (
+                  i: arg:
+                    if arg == "-f" || arg == "--file"
+                    then {
+                      file = import "${lessonPath}/${builtins.elemAt args (i + 1)}";
+                    }
+                    else if arg == "--apply"
+                    then {
+                      apply = import (
+                        builtins.toFile "apply.nix"
+                        (lib.replaceStrings
+                          ["import <nixpkgs> {"]
+                          [''import ${builtins.toString pkgs.path} {system="${pkgs.system}";'']
+                          (builtins.elemAt args (i + 1)))
+                      );
+                    }
+                    else if arg == "--json"
+                    then {json = builtins.toJSON;}
+                    else {}
+                )
+                args);
+            in
+              lib.pipe (parsed.file or (throw "no file specified")) [
+                (parsed.apply or lib.id)
+                (parsed.json or (lib.generators.toPretty {}))
+                lib.escapeShellArg
+                (x: "echo ${x}")
+              ];
+          }
+        ];
+      in
+        builtins.readFile
+        (pkgs.runCommand "run" {
+            buildInputs = [pkgs.nix];
+            NIX_CONFIG = "extra-experimental-features = nix-command flakes read-only-local-store";
+          } ''
+            set -euo pipefail
+            cp -r ${lessonPath}/* ./
+            exec > $out
+            echo '```'
+            ${sanitizedCmdLine}
+            echo '```'
+          ''))
+      runEvaluationToSubstitue;
   in rec {
+    inherit lessonDir;
     outputParentDir = "lessons/" + lessonDir;
     outputFilePath = outputParentDir + "/" + lessonFile;
-    subsLesson = (
-      builtins.replaceStrings
-      selfLinesToReplace
-      selfValueToSubstitute
-      (
-        builtins.replaceStrings
-        linesToReplace
-        textToSubstitute
-        rawLesson
-      )
-    );
+    subsLesson = lib.pipe rawLesson [
+      (builtins.replaceStrings linesToReplace textToSubstitute)
+      (builtins.replaceStrings selfLinesToReplace selfValueToSubstitute)
+      (builtins.replaceStrings runLinesToReplace runValueToSubstitute)
+    ];
   };
 
   /*
@@ -280,7 +360,11 @@
   copyLessonsToNixStore = lessons:
     pkgs.runCommand
     "copy-module-lessons"
-    {}
+    {
+      passthru = {
+        lessons = builtins.listToAttrs (map (l: lib.nameValuePair l.lessonDir l) lessons);
+      };
+    }
     ''
       mkdir $out
       ${

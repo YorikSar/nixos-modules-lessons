@@ -82,6 +82,6 @@ We can create a helper script to parse and evaluate our `eval.nix` file and prin
 
 If you execute the run file (`./run.sh`), you should see an output that matches what we have configured.
 
-[//]: # (self.eval)
+[//]: # (run ./run.sh)
 
 [option-types-basic]: https://nixos.org/manual/nixos/stable/#sec-option-types-basic
